@@ -110,10 +110,11 @@ const fmt=v=>v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDi
 const esc=s=>String(s).replace(/[&<>"]/g,k=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[k]));
 const F=n=>`${UI.dfs+n}px sans-serif`;
 let sym=SYMS[localStorage.sym]?localStorage.sym:'BTCUSD',tf=TFS[localStorage.tf]?localStorage.tf:'1h',dtf=tf,iv=TFS[tf][1],dispSym=null,busy=false,D=[],W=0,H=0,PW=0,PH=0,dpr=1;
-let tool='cursor',cur=null,sel=null,drs=[],undoS=[],hide=false,magnet=localStorage.magnet==='1',keep=false,col='auto',lw=1,dsh=false;
+let tool='cursor',cur=null,sel=null,drs=[],undoS=[],hide=false,magnet=localStorage.magnet==='1',keep=localStorage.keep==='1',col='auto',lw=1,dsh=false;
 let TOL=8,mx=null,my=null,drag=null,down=null,pend=false,block=false,brushing=false,ws=null,gen=0,lg=0,hasMore=true,loading=false,pollT=null,dirty=true,sig='',lsig='',msg='',series=null;
+let free=false,restoring=false,ft=null,fp=null; /* free = mode skala harga bebas (autoScale mati) */
 const tags=[],draw=()=>{dirty=true};
-let adj=null; /* mode setting titik: {d,i,cx,cy,lx,ly,moving} */
+let adj=null; /* mode setting titik: {d,i,cx,cy,lx,ly,moving,out,drag} */
 
 /* ---------- chart (TradingView Lightweight Charts) ---------- */
 const chart=LW.createChart($('#chart'),{autoSize:true,
@@ -124,7 +125,8 @@ const chart=LW.createChart($('#chart'),{autoSize:true,
  timeScale:{borderColor:TH.bd,timeVisible:true,secondsVisible:false,ticksVisible:false,rightOffset:UI.ro,barSpacing:UI.bs,minBarSpacing:1.5}});
 const toLW=b=>({time:Math.floor(b.t/1000),open:b.o,high:b.h,low:b.l,close:b.c});
 function mkSeries(){if(series)chart.removeSeries(series);
- series=chart.addSeries(LW.CandlestickSeries,{upColor:TH.up,downColor:TH.dn,borderVisible:true,borderUpColor:TH.ub,borderDownColor:TH.db,wickUpColor:TH.ub,wickDownColor:TH.db});
+ series=chart.addSeries(LW.CandlestickSeries,{upColor:TH.up,downColor:TH.dn,borderVisible:true,borderUpColor:TH.ub,borderDownColor:TH.db,wickUpColor:TH.ub,wickDownColor:TH.db,
+  autoscaleInfoProvider:b=>fp?{priceRange:{minValue:fp.lo,maxValue:fp.hi}}:b()});
  series.setData(D.map(toLW));draw()}
 const nz=v=>v==null?-1e5:v;
 const X=i=>nz(chart.timeScale().logicalToCoordinate(i)),I=x=>{const v=chart.timeScale().coordinateToLogical(x);return v==null?0:v};
@@ -163,20 +165,31 @@ function showMsg(){const m=$('#msg');m.textContent=msg;const er=msg.startsWith('
 const srcLabel=()=>SYMS[sym].P[pv[sym]||0][0].toUpperCase();
 /* kiri atas: hanya nama pair + sumber */
 function legend(){$('#lg').innerHTML=`<b>${sym}</b> <span>· ${srcLabel()}</span>`;$('#wm').innerHTML=`<b>${sym}, ${tf}</b><span>${SYMS[sym].name}</span>`}
-function resetView(){const n=D.length;chart.priceScale('right').applyOptions({autoScale:true});chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-120),to:n+UI.ro})}
-/* ganti timeframe/pair: data lama tetap tampil sampai data baru siap, lalu rentang waktu yang dilihat dipertahankan → gambar tidak bergeser.
-   Gambar disimpan juga di memori (MEM) sehingga tidak hilang walau localStorage bermasalah */
+/* ---------- skala harga bebas (free movement) ----------
+   Geser sumbu harga → autoScale mati → chart bebas digerakkan. Status + rentang harga disimpan per pair
+   dan dipertahankan saat ganti timeframe maupun refresh. Reset / klik dua kali sumbu harga → kembali otomatis. */
+const clearFree=()=>{try{localStorage.removeItem('fr_'+(dispSym||sym))}catch(e){}};
+function loadFree(){try{const r=JSON.parse(localStorage['fr_'+sym]||'null');return r&&r.hi>r.lo?r:null}catch(e){return null}}
+function queueFree(){clearTimeout(ft);ft=setTimeout(()=>{if(!free||busy||restoring||!D.length)return;const r={hi:P(0),lo:P(PH)};if(!(r.hi>r.lo))return;try{localStorage['fr_'+(dispSym||sym)]=JSON.stringify(r)}catch(e){}},250)}
+function restoreFree(r){if(!r||!(r.hi>r.lo))return;restoring=true;const V=r.hi-r.lo;
+ fp={lo:r.lo+UI.pb/100*V,hi:r.hi-UI.pt/100*V};
+ chart.priceScale('right').applyOptions({autoScale:true});
+ requestAnimationFrame(()=>requestAnimationFrame(()=>{chart.priceScale('right').applyOptions({autoScale:false});fp=null;free=true;restoring=false;draw()}))}
+function resetView(soft){const n=D.length;chart.priceScale('right').applyOptions({autoScale:true});free=false;if(!soft)clearFree();chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-120),to:n+UI.ro})}
+/* ganti timeframe/pair: data lama tetap tampil sampai data baru siap.
+   Saat ganti timeframe: lebar rentang (ukuran candle) dan jarak candle terakhir ke tepi kanan dipertahankan,
+   skala harga bebas tidak disentuh. Gambar tersimpan per pair (MEM + localStorage) dan berbasis waktu asli. */
 async function load(){const g=++lg,sc=dispSym!==sym;busy=true;let tr=null;
- if(sc){endAdj();D=[];drs=[];sel=null;cur=null;series.setData([]);rmBA()}
- else{const r=chart.timeScale().getVisibleLogicalRange();if(r&&D.length)tr=[iT(r.from),iT(r.to)]}
+ if(sc){endAdj();chart.priceScale('right').applyOptions({autoScale:true});free=false;D=[];sel=null;cur=null;series.setData([]);rmBA()}
+ else{const r=chart.timeScale().getVisibleLogicalRange();if(r&&D.length)tr={len:r.to-r.from,off:r.to-(D.length-1)}}
  msg=D.length?'':'Memuat data…';showMsg();let k;
  try{k=await klines(0,0,tf);if(g!==lg)return}
  catch(e){if(g!==lg)return;busy=false;msg='Gagal memuat data → '+e+'\n\nJika halaman dibuka dari pratinjau aplikasi, buka lewat alamat GitHub Pages di browser. Coba sumber lain lewat menu pair, atau ketuk di sini untuk mengulang.';showMsg();return}
- if(sc){dispSym=sym;try{drs=JSON.parse(MEM[sym]||localStorage['dr_'+sym]||'[]')}catch(e){drs=[]}}
+ if(sc){drs=[];dispSym=sym;try{drs=JSON.parse(MEM[sym]||localStorage['dr_'+sym]||'[]')}catch(e){drs=[]}}
  D=k;dtf=tf;iv=TFS[tf][1];hasMore=true;busy=false;msg='';series.setData(D.map(toLW));
- const n=D.length;let ok=false;
- if(tr){const a=tI(tr[0]),b=tI(tr[1]);if(b>0){chart.priceScale('right').applyOptions({autoScale:true});chart.timeScale().setVisibleLogicalRange({from:Math.max(a,b-600),to:b});ok=true}}
- if(!ok)resetView();
+ const n=D.length;
+ if(tr){if(!free)chart.priceScale('right').applyOptions({autoScale:true});const to=n-1+tr.off;chart.timeScale().setVisibleLogicalRange({from:to-tr.len,to})}
+ else{resetView(true);const fr=loadFree();if(fr)restoreFree(fr)}
  showMsg();connect();legend();pbLabel();draw()}
 function upsert(b){const L=D[D.length-1];if(!L)return;if(L.t===b.t)D[D.length-1]=b;else if(b.t>L.t)D.push(b);else return;series.update(toLW(b))}
 let bid=null,ask=null,bl=null,al=null,pingT=null,lastMsg=0;
@@ -197,7 +210,7 @@ function connect(){if(ws){ws.onclose=null;ws.close();ws=null}clearInterval(pollT
   ws.onmessage=e=>{if(g!==gen)return;lastMsg=Date.now();let m;try{m=JSON.parse(e.data)}catch(_){return}const d=m.data||m;
    if(d.k)upsert({t:d.k.t,o:+d.k.o,h:+d.k.h,l:+d.k.l,c:+d.k.c});else if(d.b!==undefined&&d.a!==undefined){bid=+d.b;ask=+d.a;updBA()}}}
  ws.onclose=()=>{clearInterval(pingT);if(g===gen)setTimeout(()=>g===gen&&connect(),2500)};
- pollT=setInterval(async()=>{if(document.hidden||busy||g!==gen||!D.length)return;if(ws&&ws.readyState===1&&Date.now()-lastMsg<8000&&bid!=null)return;try{(await klines(0,2)).forEach(upsert)}catch(e){}fetchBA(g)},3000)}
+ pollT=setInterval(async()=>{if(document.hidden||busy||g!==gen||!D.length)return;if(ws&&ws.readyState===1&&Date.now()-lastMsg<8000&&bid!=null)return;try{const kk=await klines(0,2);if(g===gen&&!busy)kk.forEach(upsert)}catch(e){}fetchBA(g)},3000)}
 document.addEventListener('visibilitychange',()=>{if(!document.hidden&&D.length&&(!ws||ws.readyState>1))connect()});
 async function more(){if(loading||busy||!hasMore||!D.length)return;loading=true;const g=lg;
  try{const k=(await klines(D[0].t-1)).filter(b=>b.t<D[0].t);if(g===lg&&!busy){if(!k.length)hasMore=false;else{const r=chart.timeScale().getVisibleLogicalRange();D=k.concat(D);series.setData(D.map(toLW));if(r)chart.timeScale().setVisibleLogicalRange({from:r.from+k.length,to:r.to+k.length})}}}catch(e){hasMore=false}
@@ -230,10 +243,10 @@ function place(x,y){const pt=sp(x,y);
 /* ---------- mode setting titik (crosshair relatif) ----------
    Sentuh titik drawer → crosshair berada tepat di titik itu. Geser jari dari mana saja di chart →
    crosshair (dan titik) ikut bergerak relatif. Sentuh titik lain → crosshair pindah ke titik itu.
-   Bertahan sampai tombol "✓ Selesai" / Esc. */
+   Ketuk singkat di luar objek (atau tombol "✓ Selesai" / Esc) → sesi selesai. */
 function adjQ(){const d=adj.d;return d.type==='hline'?[adj.cx,Y(d.pts[0].p)]:d.type==='vline'?[X(tI(d.pts[0].t)),adj.cy]:pxy(d.pts[adj.i])}
 function adjSync(){if(!adj)return;const d=adj.d,q=adjQ();if(d.type!=='vline')adj.cy=clamp(q[1],0,PH-1);if(d.type!=='hline')adj.cx=clamp(q[0],0,PW-1)}
-function startAdj(d,i,x,y){adj={d,i,cx:x,cy:y,lx:x,ly:y,moving:true};adjSync();snapU();chart.applyOptions({crosshair:{mode:LW.CrosshairMode.Hidden}});draw()}
+function startAdj(d,i,x,y){adj={d,i,cx:x,cy:y,lx:x,ly:y,moving:true,out:false,drag:true};adjSync();snapU();chart.applyOptions({crosshair:{mode:LW.CrosshairMode.Hidden}});draw()}
 function adjMove(x,y){const d=adj.d;adj.cx=clamp(adj.cx+x-adj.lx,0,PW-1);adj.cy=clamp(adj.cy+y-adj.ly,0,PH-1);adj.lx=x;adj.ly=y;const s=sp(adj.cx,adj.cy);if(d.type==='hline')d.pts[0].p=s.p;else if(d.type==='vline')d.pts[0].t=s.t;else d.pts[adj.i]=s}
 function endAdj(){if(!adj)return;if(JSON.stringify(drs)===undoS[undoS.length-1])undoS.pop();adj=null;chart.applyOptions({crosshair:{mode:tool==='cursor'?LW.CrosshairMode.Normal:LW.CrosshairMode.Hidden}});save();draw()}
 
@@ -304,7 +317,9 @@ function frame(){requestAnimationFrame(frame);if(!series)return;
  if($('#lm').style.display==='block'){const s='x'+drs.map(d=>d.id+(d.hid?1:0)+(d.lock?1:0)).join()+(sel?sel.id:'')+sym;if(s!==lsig){lsig=s;buildLM()}}
  if(!D.length)return;
  const r=chart.timeScale().getVisibleLogicalRange(),s=[r&&r.from,r&&r.to,series.priceToCoordinate(1),series.priceToCoordinate(2),W,H,mx,my,cur&&cur.pts.length].join();
- if(s!==sig||dirty){sig=s;dirty=false;paint()}}
+ /* deteksi mode skala harga bebas (geser sumbu harga mematikan autoScale; klik 2x sumbu menyalakannya lagi) */
+ if(!busy&&!restoring){const fr=!chart.priceScale('right').options().autoScale;if(fr!==free){free=fr;if(!fr)clearFree()}}
+ if(s!==sig||dirty){sig=s;dirty=false;paint();if(free)queueFree()}}
 
 /* ---------- interaksi ---------- */
 const pos=e=>{const r=wrap.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]};
@@ -312,9 +327,10 @@ wrap.addEventListener('pointerdown',e=>{block=false;if(e.target.closest&&e.targe
  TOL=e.pointerType==='touch'?16:8;if(!D.length||x>PW||y>PH)return;
  const take=()=>{block=true;e.stopPropagation();e.preventDefault();try{wrap.setPointerCapture(e.pointerId)}catch(_){}};
  down={x,y};
- /* sedang mode setting titik: sentuh titik lain → pindah crosshair ke titik itu; selain itu → geser relatif */
+ /* sedang mode setting titik: sentuh titik lain → pindah crosshair ke titik itu; geser → relatif; ketuk singkat di luar objek → selesai */
  if(adj){take();const p=adj.d.pts.map(pxy);let j=-1,bd=TOL+8;
   if(adj.d.type!=='hline'&&adj.d.type!=='vline')p.forEach((q,i)=>{const dd=Math.hypot(q[0]-x,q[1]-y);if(dd<bd){bd=dd;j=i}});
+  adj.out=j<0&&!bodyHit(adj.d,x,y);adj.drag=!adj.out;
   if(j>=0)adj.i=j;adjSync();adj.lx=x;adj.ly=y;adj.moving=true;draw();return}
  if(tool!=='cursor'){take();if(tool==='brush'){snapU();cur={id:Date.now(),type:'brush',pts:[sp(x,y)],color:col,w:lw,dash:dsh};brushing=true}else pend=true;draw();return}
  let h=null,hd=null;if(!hide)for(let j=drs.length-1;j>=0&&!h;j--){if(drs[j].hid)continue;const t=hitTest(drs[j],x,y);if(t){h=t;hd=drs[j]}}
@@ -325,13 +341,16 @@ wrap.addEventListener('pointerdown',e=>{block=false;if(e.target.closest&&e.targe
  draw()},true);
 ['mousedown','touchstart'].forEach(n=>wrap.addEventListener(n,e=>{if(block)e.stopPropagation()},true));
 wrap.addEventListener('pointermove',e=>{const[x,y]=pos(e);mx=x;my=y;
- if(adj){if(adj.moving)adjMove(x,y);draw();return}
+ if(adj){if(adj.moving){if(adj.out&&!adj.drag){if(Math.hypot(x-down.x,y-down.y)<10){draw();return}adj.drag=true;adj.lx=x;adj.ly=y;draw();return}adjMove(x,y)}draw();return}
  if(drag){if(drag.m==='pt')drag.d.pts[drag.i]=sp(x,y);else{const di=I(x)-I(drag.sx),dp=P(y)-P(drag.sy);drag.d.pts=drag.orig.map(o=>({t:iT(tI(o.t)+di),p:o.p+dp}))}}
  else if(brushing&&cur)cur.pts.push(sp(x,y));
  draw()},true);
 /* titik ditempatkan saat jari/mouse dilepas, tepat di posisi crosshair */
 const up=e=>{const[x,y]=pos(e);
- if(adj){if(adj.moving){adj.moving=false;save()}draw();return}
+ if(adj){adj.moving=false;
+  if(adj.out&&!adj.drag){endAdj();let h=null;if(!hide)for(let j=drs.length-1;j>=0&&!h;j--)if(!drs[j].hid&&hitTest(drs[j],x,y))h=drs[j];sel=h;syncProps()}
+  else save();
+  draw();return}
  if(brushing&&cur){brushing=false;if(cur.pts.length>2)finish();else cur=null}
  else if(pend){pend=false;const cx=clamp(x,0,PW-1),cy=clamp(y,0,PH-1);
   if(!cur&&down&&NEED[tool]>1&&Math.hypot(x-down.x,y-down.y)>12){place(down.x,down.y);if(cur)place(cx,cy)}else place(cx,cy)}
@@ -437,8 +456,8 @@ function buildLM(){const m=$('#lm');m.innerHTML=`<div class="ph">Gambar aktif ($
   r.onclick=()=>{if(!d.hid){if(adj&&adj.d!==d)endAdj();sel=d;syncProps()}draw()};m.appendChild(r)})}
 TOOLS.forEach(t=>{if(t==='|'){$('#tools').appendChild(document.createElement('hr'));return}const b=addBtn($('#tools'),t[0],t[2],()=>{setTool(t[0]);sel=null});b.dataset.t=t[0]});
 $('#tools').appendChild(document.createElement('hr'));
-addBtn($('#tools'),'magnet','Magnet: tempel ke Open/High/Low/Close (posisi bisa bergeser antar timeframe)',b=>{magnet=!magnet;localStorage.magnet=magnet?'1':'0';b.classList.toggle('on',magnet);toast(magnet?'Magnet AKTIF':'Magnet mati — titik tepat di posisi tap')}).classList.toggle('on',magnet);
-addBtn($('#tools'),'keep','Tetap di mode gambar',b=>{keep=!keep;b.classList.toggle('on',keep);toast(keep?'Mode gambar tetap aktif':'Kembali ke kursor setelah menggambar')});
+addBtn($('#tools'),'magnet','Magnet: tempel ke Open/High/Low/Close (posisi bisa bergeser antar timeframe)',b=>{magnet=!magnet;try{localStorage.magnet=magnet?'1':'0'}catch(e){}b.classList.toggle('on',magnet);toast(magnet?'Magnet AKTIF':'Magnet mati — titik tepat di posisi tap')}).classList.toggle('on',magnet);
+addBtn($('#tools'),'keep','Tetap di mode gambar',b=>{keep=!keep;try{localStorage.keep=keep?'1':'0'}catch(e){}b.classList.toggle('on',keep);toast(keep?'Mode gambar tetap aktif':'Kembali ke kursor setelah menggambar')}).classList.toggle('on',keep);
 addBtn($('#tools'),'hide','Sembunyikan semua gambar',b=>{hide=!hide;b.classList.toggle('on',hide);if(hide)endAdj();draw()});
 addBtn($('#tools'),'list','Daftar gambar aktif',b=>{const o=$('#lm').style.display==='block';$('#lm').style.display=o?'none':'block';b.classList.toggle('on',!o);lsig=''}).id='lb';
 addBtn($('#tools'),'trash','Hapus terpilih (ketuk 2x tanpa pilihan = hapus semua)',()=>del());
