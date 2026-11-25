@@ -84,8 +84,8 @@ select.b{padding:0 6px}select.b option{background:var(--pn);color:var(--tx)}
 <div class="pop" id="pm"></div><div class="pop" id="sm"></div><div class="pop" id="lm"></div>
 </div>
 <script>
-const SYMS={BTCUSD:{name:'Bitcoin / U.S. Dollar',badge:['₿','#f7931a'],P:[['Binance','vision','BTCUSDT'],['Bybit','bybit','BTCUSDT'],['Binance (alt)','spot','BTCUSDT']]},
- XAUUSD:{name:'Gold Spot / U.S. Dollar',badge:['Au','#c9a227'],P:[['Binance Futures','fut','XAUUSDT'],['Bybit','bybit','XAUUSDT'],['Binance PAXG','vision','PAXGUSDT']]}};
+const SYMS={XAUUSD:{name:'Gold Spot / U.S. Dollar',badge:['Au','#c9a227'],P:[['Binance Futures','fut','XAUUSDT'],['Bybit','bybit','XAUUSDT'],['Binance PAXG','vision','PAXGUSDT']]},
+ BTCUSD:{name:'Bitcoin / U.S. Dollar',badge:['₿','#f7931a'],P:[['Binance','vision','BTCUSDT'],['Bybit','bybit','BTCUSDT'],['Binance (alt)','spot','BTCUSDT']]}};
 const THEMES={dark:{bg:'#000',fg:'#e6e6e6',bgA:'rgba(0,0,0,.85)',grid:'#161616',bd:'#262626',txt:'#b8b8b8',ch:'#8a8a8a',lab:'#262626',up:'#ffffff',dn:'#000000',ub:'#ffffff',db:'#ffffff',dcol:'#ffffff',bid:'#ff6b6b',ask:'#5b8cff',meta:'#000000'},
  light:{bg:'#fff',fg:'#131722',bgA:'rgba(255,255,255,.88)',grid:'#f0f3fa',bd:'#e0e3eb',txt:'#131722',ch:'#9598a1',lab:'#131722',up:'#ffffff',dn:'#000000',ub:'#000000',db:'#000000',dcol:'#000000',bid:'#d32f2f',ask:'#1d4ed8',meta:'#ffffff'}};
 let theme=localStorage.theme2==='dark'?'dark':'light',TH=THEMES[theme],zone=['local','NY','UTC'].includes(localStorage.zone)?localStorage.zone:'local';
@@ -109,7 +109,7 @@ const clamp=(v,a,b)=>Math.min(b,Math.max(a,v));
 const fmt=v=>v.toLocaleString('en-US',{minimumFractionDigits:2,maximumFractionDigits:2});
 const esc=s=>String(s).replace(/[&<>"]/g,k=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[k]));
 const F=n=>`${UI.dfs+n}px sans-serif`;
-let sym=SYMS[localStorage.sym]?localStorage.sym:'BTCUSD',tf=TFS[localStorage.tf]?localStorage.tf:'1h',dtf=tf,iv=TFS[tf][1],dispSym=null,busy=false,D=[],W=0,H=0,PW=0,PH=0,dpr=1;
+let sym=SYMS[localStorage.sym]?localStorage.sym:'XAUUSD',tf=TFS[localStorage.tf]?localStorage.tf:'1h',dtf=tf,iv=TFS[tf][1],dispSym=null,busy=false,D=[],W=0,H=0,PW=0,PH=0,dpr=1;
 let tool='cursor',cur=null,sel=null,drs=[],undoS=[],hide=false,magnet=localStorage.magnet==='1',keep=localStorage.keep==='1',col='auto',lw=1,dsh=false;
 let TOL=8,mx=null,my=null,drag=null,down=null,pend=false,block=false,brushing=false,ws=null,gen=0,lg=0,hasMore=true,loading=false,pollT=null,dirty=true,sig='',lsig='',msg='',series=null;
 let free=false,restoring=false,ft=null,fp=null; /* free = mode skala harga bebas (autoScale mati) */
@@ -156,16 +156,25 @@ function chan(p){const dx=p[1][0]-p[0][0]||1e-6,yAt=p[0][1]+(p[1][1]-p[0][1])*(p
 const BYB={'1m':'1','5m':'5','15m':'15','30m':'30','1h':'60','4h':'240','D':'D','W':'W'},pv={};
 const URLS={spot:'https://api.binance.com/api/v3/klines',vision:'https://data-api.binance.vision/api/v3/klines',fut:'https://fapi.binance.com/fapi/v1/klines'};
 const BAU={spot:'https://api.binance.com/api/v3/ticker/bookTicker',vision:'https://data-api.binance.vision/api/v3/ticker/bookTicker',fut:'https://fapi.binance.com/fapi/v1/ticker/bookTicker'};
+const HIST=1000; /* jumlah candle minimum yang selalu dimuat ke belakang, di timeframe apa pun */
 async function fetchP(p,end,lim,t){const k=p[1],s=p[2];let u;
  if(k==='bybit')u=`https://api.bybit.com/v5/market/kline?category=linear&symbol=${s}&interval=${BYB[t]}&limit=${Math.min(lim||1000,1000)}`+(end?`&end=${end}`:'');
- else u=URLS[k]+`?symbol=${s}&interval=${TFS[t][0]}&limit=${lim||(k==='fut'?1500:1000)}`+(end?`&endTime=${end}`:'');
+ else u=URLS[k]+`?symbol=${s}&interval=${TFS[t][0]}&limit=${Math.min(lim||1000,1000)}`+(end?`&endTime=${end}`:'');
  const r=await fetch(u);if(!r.ok)throw'HTTP '+r.status;const j=await r.json();
  const a=k==='bybit'?(j.retCode===0?j.result.list.slice().reverse():null):j;if(!Array.isArray(a))throw'data kosong';
- return a.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4]}))}
+ return a.map(x=>({t:+x[0],o:+x[1],h:+x[2],l:+x[3],c:+x[4]})).sort((m,n)=>m.t-n.t)}
 async function klines(end,lim,t){t=t||dtf;const L=SYMS[sym].P;
  if(end||lim)return fetchP(L[pv[sym]||0],end,lim,t);
  const f=localStorage['src_'+sym],ord=(f&&f!=='auto'&&L[+f])?[+f]:L.map((_,i)=>i),errs=[];for(const i of ord){try{const k=await fetchP(L[i],0,0,t);if(!k.length)throw'kosong';pv[sym]=i;return k}catch(e){errs.push(L[i][0]+': '+((e&&e.message)||e))}}
  throw errs.join(' · ')}
+/* muat riwayat: minimal HIST (1000) candle ke belakang, dan otomatis lebih panjang bila perlu
+   sampai mencakup waktu needT (gambar tertua / sisi kiri layar sebelum ganti timeframe).
+   Halaman demi halaman (tiap 1000 candle) digabung tanpa duplikat, urut waktu. Mengembalikan null bila ada pemuatan yang lebih baru. */
+async function history(t,minN,needT,g){let k=await klines(0,0,t);if(g!==lg)return null;let guard=0;
+ while(k.length&&guard++<25&&(k.length<minN||(isFinite(needT)&&k[0].t>needT))){
+  let o;try{o=(await klines(k[0].t-1,0,t)).filter(b=>b.t<k[0].t)}catch(e){break}
+  if(g!==lg)return null;if(!o.length)break;k=o.concat(k)}
+ return k}
 async function fetchBA(g){const p=SYMS[sym].P[pv[sym]||0];try{let b,a;
  if(p[1]==='bybit'){const j=await(await fetch(`https://api.bybit.com/v5/market/tickers?category=linear&symbol=${p[2]}`)).json();const t=j.result.list[0];b=+t.bid1Price;a=+t.ask1Price}
  else{const j=await(await fetch(BAU[p[1]]+'?symbol='+p[2])).json();b=+j.bidPrice;a=+j.askPrice}
@@ -185,26 +194,30 @@ function restoreFree(r){if(!r||!(r.hi>r.lo))return;restoring=true;const V=r.hi-r
  chart.priceScale('right').applyOptions({autoScale:true});
  requestAnimationFrame(()=>requestAnimationFrame(()=>{chart.priceScale('right').applyOptions({autoScale:false});fp=null;free=true;restoring=false;draw()}))}
 function resetView(soft){const n=D.length;chart.priceScale('right').applyOptions({autoScale:true});free=false;if(!soft)clearFree();chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-120),to:n+UI.ro})}
-/* waktu terlama dari semua gambar (untuk memastikan riwayat candle cukup panjang) */
-function earliestDraw(){let m=Infinity;drs.forEach(d=>{(d.pts||[]).forEach(q=>{if(q&&isFinite(q.t)&&q.t<m)m=q.t})});return m}
+/* waktu terlama dari gambar (untuk memastikan riwayat candle cukup panjang) */
+function earliestDraw(a){let m=Infinity;(a||drs).forEach(d=>{(d.pts||[]).forEach(q=>{if(q&&isFinite(q.t)&&q.t<m)m=q.t})});return m}
+/* baca gambar tersimpan sebuah pair tanpa mengubah state */
+function drsOf(s){try{return JSON.parse(MEM[s]||localStorage['dr_'+s]||'[]')}catch(e){return[]}}
 /* ganti timeframe/pair: data lama tetap tampil sampai data baru siap.
-   Saat ganti timeframe: lebar rentang (ukuran candle) dan jarak candle terakhir ke tepi kanan dipertahankan,
-   skala harga bebas tidak disentuh. Gambar tersimpan per pair (MEM + localStorage) dan berbasis waktu asli.
-   Riwayat candle otomatis diperpanjang ke belakang sampai mencakup gambar tertua, sehingga gambar tidak hilang. */
+   Saat ganti timeframe: RENTANG WAKTU yang sedang terlihat dipertahankan (bukan jumlah bar), sehingga semua objek
+   yang terlihat sebelum ganti tetap terlihat di timeframe baru. Skala harga bebas tidak disentuh.
+   Gambar tersimpan per pair (MEM + localStorage) dan berbasis waktu asli.
+   Riwayat candle minimal 1000 dan otomatis diperpanjang ke belakang sampai mencakup gambar tertua + sisi kiri layar. */
 async function load(){const g=++lg,sc=dispSym!==sym;busy=true;let tr=null;
  if(sc){endAdj();chart.priceScale('right').applyOptions({autoScale:true});free=false;D=[];sel=null;cur=null;series.setData([]);rmBA()}
- else{const r=chart.timeScale().getVisibleLogicalRange();if(r&&D.length)tr={len:r.to-r.from,off:r.to-(D.length-1)}}
+ else{const r=chart.timeScale().getVisibleLogicalRange();if(r&&D.length)tr={fT:iT(r.from),tT:iT(r.to),off:r.to-(D.length-1)}}
  msg=D.length?'':'Memuat data…';showMsg();let k;
- try{k=await klines(0,0,tf);if(g!==lg)return}
+ const needT=Math.min(earliestDraw(sc?drsOf(sym):drs),tr?tr.fT:Infinity)-TFS[tf][1]*5;
+ try{k=await history(tf,HIST,needT,g);if(!k)return}
  catch(e){if(g!==lg)return;busy=false;msg='Gagal memuat data → '+e+'\n\nJika halaman dibuka dari pratinjau aplikasi, buka lewat alamat GitHub Pages di browser. Coba sumber lain lewat menu pair, atau ketuk di sini untuk mengulang.';showMsg();return}
- if(sc){drs=[];dispSym=sym;try{drs=JSON.parse(MEM[sym]||localStorage['dr_'+sym]||'[]')}catch(e){drs=[]}}
- /* perpanjang riwayat ke kiri sampai mencakup gambar tertua */
- {const need=earliestDraw()-TFS[tf][1]*5;let guard=0;
-  while(k.length&&isFinite(need)&&k[0].t>need&&guard++<20){
-   try{const o=(await klines(k[0].t-1,0,tf)).filter(b=>b.t<k[0].t);if(g!==lg)return;if(!o.length)break;k=o.concat(k)}catch(e){break}}}
+ if(sc){drs=[];dispSym=sym;drs=drsOf(sym)}
  D=k;dtf=tf;iv=TFS[tf][1];hasMore=true;busy=false;msg='';series.setData(D.map(toLW));
  const n=D.length;
- if(tr){if(!free)chart.priceScale('right').applyOptions({autoScale:true});const to=n-1+tr.off;chart.timeScale().setVisibleLogicalRange({from:to-tr.len,to})}
+ if(tr){if(!free)chart.priceScale('right').applyOptions({autoScale:true});
+  /* kiri = waktu kiri layar sebelumnya; kanan = waktu kanan sebelumnya (atau margin kanan tetap bila sebelumnya di candle terbaru) */
+  let to=tr.off>=-1?n-1+clamp(tr.off,0,UI.ro+20):tI(tr.tT),from=tI(tr.fT);
+  if(to-from<30)from=to-30;
+  chart.timeScale().setVisibleLogicalRange({from,to})}
  else{resetView(true);const fr=loadFree();if(fr)restoreFree(fr)}
  showMsg();connect();legend();pbLabel();draw()}
 function upsert(b){const L=D[D.length-1];if(!L)return;if(L.t===b.t)D[D.length-1]=b;else if(b.t>L.t)D.push(b);else return;series.update(toLW(b))}
