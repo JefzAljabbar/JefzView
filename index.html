@@ -124,9 +124,18 @@ const chart=LW.createChart($('#chart'),{autoSize:true,
  rightPriceScale:{borderColor:TH.bd,minimumWidth:0,ticksVisible:false,scaleMargins:{top:UI.pt/100,bottom:UI.pb/100}},
  timeScale:{borderColor:TH.bd,timeVisible:true,secondsVisible:false,ticksVisible:false,rightOffset:UI.ro,barSpacing:UI.bs,minBarSpacing:1.5}});
 const toLW=b=>({time:Math.floor(b.t/1000),open:b.o,high:b.h,low:b.l,close:b.c});
+/* rentang harga gambar yang sedang terlihat (waktu) → ikut dimasukkan ke autoscale,
+   supaya objek tidak "hilang" di luar layar secara vertikal saat ganti timeframe */
+function drawRange(){if(hide||!D.length||!drs.length)return null;const lr=chart.timeScale().getVisibleLogicalRange();if(!lr)return null;let lo=Infinity,hi=-Infinity;
+ drs.forEach(d=>{if(d.hid||d.type==='hline'||d.type==='vline'||!d.pts||!d.pts.length)return;
+  if(!d.pts.some(q=>{const i=tI(q.t);return i>=lr.from&&i<=lr.to}))return;
+  d.pts.forEach(q=>{if(q.p<lo)lo=q.p;if(q.p>hi)hi=q.p})});
+ return hi>=lo?[lo,hi]:null}
 function mkSeries(){if(series)chart.removeSeries(series);
  series=chart.addSeries(LW.CandlestickSeries,{upColor:TH.up,downColor:TH.dn,borderVisible:true,borderUpColor:TH.ub,borderDownColor:TH.db,wickUpColor:TH.ub,wickDownColor:TH.db,
-  autoscaleInfoProvider:b=>fp?{priceRange:{minValue:fp.lo,maxValue:fp.hi}}:b()});
+  autoscaleInfoProvider:b=>{if(fp)return{priceRange:{minValue:fp.lo,maxValue:fp.hi}};const r=b();let v=null;try{v=drawRange()}catch(e){}if(!v)return r;
+   if(!r||!r.priceRange)return{priceRange:{minValue:v[0],maxValue:v[1]}};
+   return{...r,priceRange:{minValue:Math.min(r.priceRange.minValue,v[0]),maxValue:Math.max(r.priceRange.maxValue,v[1])}}}});
  series.setData(D.map(toLW));draw()}
 const nz=v=>v==null?-1e5:v;
 const X=i=>nz(chart.timeScale().logicalToCoordinate(i)),I=x=>{const v=chart.timeScale().coordinateToLogical(x);return v==null?0:v};
@@ -176,9 +185,12 @@ function restoreFree(r){if(!r||!(r.hi>r.lo))return;restoring=true;const V=r.hi-r
  chart.priceScale('right').applyOptions({autoScale:true});
  requestAnimationFrame(()=>requestAnimationFrame(()=>{chart.priceScale('right').applyOptions({autoScale:false});fp=null;free=true;restoring=false;draw()}))}
 function resetView(soft){const n=D.length;chart.priceScale('right').applyOptions({autoScale:true});free=false;if(!soft)clearFree();chart.timeScale().setVisibleLogicalRange({from:Math.max(0,n-120),to:n+UI.ro})}
+/* waktu terlama dari semua gambar (untuk memastikan riwayat candle cukup panjang) */
+function earliestDraw(){let m=Infinity;drs.forEach(d=>{(d.pts||[]).forEach(q=>{if(q&&isFinite(q.t)&&q.t<m)m=q.t})});return m}
 /* ganti timeframe/pair: data lama tetap tampil sampai data baru siap.
    Saat ganti timeframe: lebar rentang (ukuran candle) dan jarak candle terakhir ke tepi kanan dipertahankan,
-   skala harga bebas tidak disentuh. Gambar tersimpan per pair (MEM + localStorage) dan berbasis waktu asli. */
+   skala harga bebas tidak disentuh. Gambar tersimpan per pair (MEM + localStorage) dan berbasis waktu asli.
+   Riwayat candle otomatis diperpanjang ke belakang sampai mencakup gambar tertua, sehingga gambar tidak hilang. */
 async function load(){const g=++lg,sc=dispSym!==sym;busy=true;let tr=null;
  if(sc){endAdj();chart.priceScale('right').applyOptions({autoScale:true});free=false;D=[];sel=null;cur=null;series.setData([]);rmBA()}
  else{const r=chart.timeScale().getVisibleLogicalRange();if(r&&D.length)tr={len:r.to-r.from,off:r.to-(D.length-1)}}
@@ -186,6 +198,10 @@ async function load(){const g=++lg,sc=dispSym!==sym;busy=true;let tr=null;
  try{k=await klines(0,0,tf);if(g!==lg)return}
  catch(e){if(g!==lg)return;busy=false;msg='Gagal memuat data → '+e+'\n\nJika halaman dibuka dari pratinjau aplikasi, buka lewat alamat GitHub Pages di browser. Coba sumber lain lewat menu pair, atau ketuk di sini untuk mengulang.';showMsg();return}
  if(sc){drs=[];dispSym=sym;try{drs=JSON.parse(MEM[sym]||localStorage['dr_'+sym]||'[]')}catch(e){drs=[]}}
+ /* perpanjang riwayat ke kiri sampai mencakup gambar tertua */
+ {const need=earliestDraw()-TFS[tf][1]*5;let guard=0;
+  while(k.length&&isFinite(need)&&k[0].t>need&&guard++<20){
+   try{const o=(await klines(k[0].t-1,0,tf)).filter(b=>b.t<k[0].t);if(g!==lg)return;if(!o.length)break;k=o.concat(k)}catch(e){break}}}
  D=k;dtf=tf;iv=TFS[tf][1];hasMore=true;busy=false;msg='';series.setData(D.map(toLW));
  const n=D.length;
  if(tr){if(!free)chart.priceScale('right').applyOptions({autoScale:true});const to=n-1+tr.off;chart.timeScale().setVisibleLogicalRange({from:to-tr.len,to})}
